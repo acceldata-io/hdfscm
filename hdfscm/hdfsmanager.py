@@ -3,6 +3,8 @@ import os
 from base64 import encodebytes, decodebytes
 from getpass import getuser
 from typing import List
+import pathlib
+import subprocess
 
 import nbformat
 if os.getenv('JUPYTER_ENV') == 'test':
@@ -82,19 +84,37 @@ class HDFSContentsManager(ContentsManager):
 
     def __init__(self, *args, **kwargs):
         import os
-        import subprocess
 
         super().__init__(*args, **kwargs)
         self.log.debug("Connecting to HDFS at %s:%d", self.hdfs_host, self.hdfs_port)
+        try:
+            output = subprocess.run(["odp-select", "--version"], capture_output=True, text=True)
+            odp_version = output.stdout.strip()
+            hadoop_home = pathlib.Path(os.environ.get("HADOOP_HOME", f"/usr/odp/{odp_version}/hadoop"))
+
+        except FileNotFoundError as e:
+            self.log.error("odp-select not found: %s", e)
+            odp_version = "current"
+            hadoop_home = pathlib.Path(os.environ.get("HADOOP_HOME", f"/usr/odp/{odp_version}/hadoop-client"))
+
+        odp_directory = pathlib.Path(f"/usr/odp/{odp_version}")
+
+        if not odp_directory.exists():
+            self.log.error("ODP directory %s does not exist. ODP may not be setup correctly.", odp_directory)
 
         # Set environment variables for HDFS and Hadoop
-        os.environ["HADOOP_HOME"] = "/usr/odp/current/hadoop"
+        cmd_target = hadoop_home / "bin" / "hadoop"
+
         hadoop_classpath = subprocess.check_output(
-            [os.path.join(os.environ['HADOOP_HOME'], 'bin', 'hadoop'), 'classpath', '--glob'],
+            [str(cmd_target), 'classpath', '--glob'],
             universal_newlines=True
         ).strip()
         os.environ["CLASSPATH"] = hadoop_classpath
-        os.environ["ARROW_LIBHDFS_DIR"] = "/usr/odp/current/usr/lib"
+        # /usr/odp/current/usr directory does not exist, so we need to point it to /usr/odp/$ODP_VERSION/usr
+        if (odp_directory / "usr").exists():
+            os.environ["ARROW_LIBHDFS_DIR"] = f"/usr/odp/{odp_version}/usr/lib"
+        else:
+            self.log.error("ODP 'usr' directory '%s' does not exist. ARROW_LIBHDFS_DIR will not be set.", odp_directory / "usr")
 
         self.fs = fs.HadoopFileSystem(host=self.hdfs_host, port=self.hdfs_port)
 
