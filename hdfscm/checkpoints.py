@@ -1,10 +1,9 @@
 import hashlib
-import os
 import posixpath
 
-if os.getenv('JUPYTER_ENV') == 'test':
+try:
     from notebook.services.contents.checkpoints import Checkpoints
-else:
+except ImportError:
     from jupyter_server.services.contents.checkpoints import Checkpoints
 from pyarrow import fs
 from tornado.web import HTTPError

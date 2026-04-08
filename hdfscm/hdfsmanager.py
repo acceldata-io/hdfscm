@@ -1,3 +1,4 @@
+import hashlib
 import mimetypes
 import os
 from base64 import encodebytes, decodebytes
@@ -7,9 +8,9 @@ import pathlib
 import subprocess
 
 import nbformat
-if os.getenv('JUPYTER_ENV') == 'test':
+try:
     from notebook.services.contents.manager import ContentsManager
-else:
+except ImportError:
     from jupyter_server.services.contents.manager import ContentsManager
 from pyarrow import fs
 from tornado.web import HTTPError
@@ -284,7 +285,18 @@ class HDFSContentsManager(ContentsManager):
         except Exception as e:
             raise HTTPError(400, "Unreadable Notebook: %s\n%r" % (path, e))
 
-    def get(self, path, content=True, type=None, format=None):
+    def _get_hash(self, path, hdfs_path):
+        """Compute SHA256 hash of file contents."""
+        with perm_to_403(path):
+            if hasattr(self.fs, 'open'):
+                with self.fs.open(hdfs_path, 'rb') as f:
+                    content = f.read()
+            else:
+                with self.fs.open_input_stream(hdfs_path) as f:
+                    content = f.readall()
+        return hashlib.sha256(content).hexdigest()
+
+    def get(self, path, content=True, type=None, format=None, require_hash=False):
         hdfs_path = to_fs_path(path, get_prefix_from_fs_path(path, self.root_dir, self.shared_dir))
 
         if not self.path_exist(hdfs_path):
@@ -302,6 +314,14 @@ class HDFSContentsManager(ContentsManager):
             model = self._notebook_model(path, hdfs_path, content)
         else:
             model = self._file_model(path, hdfs_path, content, format)
+
+        if require_hash and type != 'directory':
+            model['hash'] = self._get_hash(path, hdfs_path)
+            model['hash_algorithm'] = 'sha256'
+        else:
+            model['hash'] = None
+            model['hash_algorithm'] = None
+
         return model
 
     def _save_directory(self, path, hdfs_path):
